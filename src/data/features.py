@@ -6,77 +6,86 @@ from pathlib import Path
 RAW_DIR = Path(__file__).parents[2] / "data" / "raw"
 PROCESSED_DIR = Path(__file__).parents[2] / "data" / "processed"
 
-# pybaseball schedule_and_record 팀명 약어 → 표준화
-TEAM_ABBR = {
-    "Arizona Diamondbacks": "ARI", "Atlanta Braves": "ATL", "Baltimore Orioles": "BAL",
-    "Boston Red Sox": "BOS", "Chicago Cubs": "CHC", "Chicago White Sox": "CWS",
-    "Cincinnati Reds": "CIN", "Cleveland Guardians": "CLE", "Cleveland Indians": "CLE",
-    "Colorado Rockies": "COL", "Detroit Tigers": "DET", "Houston Astros": "HOU",
-    "Kansas City Royals": "KCR", "Los Angeles Angels": "LAA", "Los Angeles Dodgers": "LAD",
-    "Miami Marlins": "MIA", "Milwaukee Brewers": "MIL", "Minnesota Twins": "MIN",
-    "New York Mets": "NYM", "New York Yankees": "NYY", "Oakland Athletics": "OAK",
-    "Philadelphia Phillies": "PHI", "Pittsburgh Pirates": "PIT", "San Diego Padres": "SDP",
-    "San Francisco Giants": "SFG", "Seattle Mariners": "SEA", "St. Louis Cardinals": "STL",
-    "Tampa Bay Rays": "TBR", "Texas Rangers": "TEX", "Toronto Blue Jays": "TOR",
-    "Washington Nationals": "WSN",
-}
+FEATURE_COLS = [
+    "home_win_rate_l10", "away_win_rate_l10",
+    "home_era", "away_era",
+    "home_ops", "away_ops",
+    "home_advantage",
+]
 
 
-def _rolling_win_rate(schedule: pd.DataFrame, team_col: str, window: int = 10) -> pd.Series:
-    """팀별 직전 window 경기 승률 계산 (리키지 방지: shift(1) 사용)"""
-    results = []
-    for _, grp in schedule.groupby(team_col):
-        won = (grp["home_team_result"] == "W").astype(float)
-        rolling = won.shift(1).rolling(window, min_periods=3).mean()
-        results.append(rolling)
-    return pd.concat(results).reindex(schedule.index)
+def _add_rolling_win_rate(df: pd.DataFrame, window: int = 10) -> pd.DataFrame:
+    """팀별 직전 window경기 승률 (리키지 방지: shift(1))"""
+    df = df.sort_values(["season", "date"]).copy()
+
+    home_rates, away_rates = {}, {}
+    result_home = []
+    result_away = []
+
+    for _, row in df.iterrows():
+        h, a = row["home_team"], row["away_team"]
+        result_home.append(home_rates.get(h, np.nan))
+        result_away.append(away_rates.get(a, np.nan))
+
+        # 경기 후 업데이트
+        for team, won in [(h, row["home_win"] == 1), (a, row["home_win"] == 0)]:
+            key = team
+            if key not in home_rates:
+                home_rates[key] = []
+            if key not in away_rates:
+                away_rates[key] = []
+            # 공용 히스토리
+
+    # 벡터화 방식으로 재계산
+    home_hist = {}  # team -> deque of results
+    from collections import deque
+
+    h_rates, a_rates = [], []
+    for _, row in df.iterrows():
+        h, a = row["home_team"], row["away_team"]
+
+        # 현재 기록 이전 승률
+        hh = home_hist.setdefault(h, deque(maxlen=window))
+        ah = home_hist.setdefault(a, deque(maxlen=window))
+
+        h_rates.append(np.mean(hh) if len(hh) >= 3 else np.nan)
+        a_rates.append(np.mean(ah) if len(ah) >= 3 else np.nan)
+
+        # 경기 결과 추가
+        hh.append(1 if row["home_win"] == 1 else 0)
+        ah.append(0 if row["home_win"] == 1 else 1)
+
+    df["home_win_rate_l10"] = h_rates
+    df["away_win_rate_l10"] = a_rates
+    return df
 
 
 def build_features() -> pd.DataFrame:
-    """raw 데이터를 읽어 ML용 피처 테이블 생성"""
-    schedules = pd.read_parquet(RAW_DIR / "schedules.parquet")
-    batting = pd.read_parquet(RAW_DIR / "team_batting.parquet")
-    pitching = pd.read_parquet(RAW_DIR / "team_pitching.parquet")
+    games = pd.read_parquet(RAW_DIR / "schedules.parquet")
+    stats = pd.read_parquet(RAW_DIR / "team_stats.parquet")
 
-    # 완료된 경기만, 결측 제거
-    df = schedules[schedules["home_team_result"].isin(["W", "L"])].copy()
-    df = df.dropna(subset=["home_team", "away_team", "date"])
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values(["season", "date"]).reset_index(drop=True)
+    games["date"] = pd.to_datetime(games["date"])
+    games = games.dropna(subset=["home_team", "away_team"])
 
-    # 홈팀 승리 레이블
-    df["label"] = (df["home_team_result"] == "W").astype(int)
+    # 시즌 통계 조인
+    stats_idx = stats.set_index(["season", "team"])
+    for side in ("home", "away"):
+        games = games.join(
+            stats_idx[["ops", "era"]].rename(columns={"ops": f"{side}_ops", "era": f"{side}_era"}),
+            on=["season", f"{side}_team"],
+        )
 
-    # 시즌별 팀 OPS / ERA 조인
-    batting_map = batting.set_index(["season", "Team"])[["OPS"]]
-    pitching_map = pitching.set_index(["season", "Team"])[["ERA"]]
+    games["home_advantage"] = 1.0
+    games = _add_rolling_win_rate(games)
 
-    df = df.join(batting_map.rename(columns={"OPS": "home_ops"}), on=["season", "home_team"])
-    df = df.join(batting_map.rename(columns={"OPS": "away_ops"}), on=["season", "away_team"])
-    df = df.join(pitching_map.rename(columns={"ERA": "home_era"}), on=["season", "home_team"])
-    df = df.join(pitching_map.rename(columns={"ERA": "away_era"}), on=["season", "away_team"])
-
-    # 최근 10경기 승률 (홈팀 기준)
-    df["home_win_rate_l10"] = _rolling_win_rate(df, "home_team", 10)
-    df["away_win_rate_l10"] = _rolling_win_rate(df, "away_team", 10)
-
-    # 홈 어드밴티지 상수
-    df["home_advantage"] = 1.0
-
-    feature_cols = [
-        "season", "date", "home_team", "away_team",
-        "home_win_rate_l10", "away_win_rate_l10",
-        "home_era", "away_era",
-        "home_ops", "away_ops",
-        "home_advantage",
-        "label",
-    ]
-
-    result = df[feature_cols].dropna()
+    feature_cols = ["season", "date", "home_team", "away_team"] + FEATURE_COLS + ["home_win"]
+    result = games[feature_cols].dropna()
+    result = result.rename(columns={"home_win": "label"})
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     result.to_parquet(PROCESSED_DIR / "features.parquet", index=False)
     print(f"피처 생성 완료: {len(result)}행 → {PROCESSED_DIR / 'features.parquet'}")
+    print(f"홈팀 승률: {result['label'].mean():.3f}")
     return result
 
 
