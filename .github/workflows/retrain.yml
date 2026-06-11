@@ -1,0 +1,45 @@
+name: Retrain & Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/models/**"
+      - "src/data/**"
+      - "data/processed/**"
+  workflow_dispatch:  # 수동 트리거도 가능
+  schedule:
+    - cron: "0 1 * * 1"  # 매주 월요일 오전 1시 (UTC)
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests first
+        run: pytest tests/ -v --tb=short
+
+      - name: Train models (MLflow local)
+        env:
+          MLFLOW_TRACKING_URI: sqlite:///mlflow.db
+        run: python -m src.models.train --model all
+
+      - name: Build Docker image
+        run: docker build -t mlb-predictor:${{ github.sha }} .
+
+      - name: Tag as latest
+        run: docker tag mlb-predictor:${{ github.sha }} mlb-predictor:latest
+
+      # 실제 배포 환경(EC2, Fly.io 등)이 있으면 아래에 push 단계 추가
+      # - name: Push to registry
+      #   run: docker push your-registry/mlb-predictor:latest
