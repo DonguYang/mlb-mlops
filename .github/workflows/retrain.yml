@@ -29,6 +29,12 @@ jobs:
       - name: Run tests first
         run: pytest tests/ -v --tb=short
 
+      - name: Collect data
+        run: python -m src.data.collect
+
+      - name: Build features
+        run: python -m src.data.features
+
       - name: Train models (MLflow local)
         env:
           MLFLOW_TRACKING_URI: sqlite:///mlflow.db
