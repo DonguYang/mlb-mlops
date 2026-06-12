@@ -9,7 +9,7 @@ on:
       - "data/processed/**"
   workflow_dispatch:  # 수동 트리거도 가능
   schedule:
-    - cron: "0 1 * * 1"  # 매주 월요일 오전 1시 (UTC)
+    - cron: "0 21 * * *"  # 매일 오전 6시 KST (= UTC 21:00)
 
 jobs:
   retrain:
