@@ -6,8 +6,7 @@ on:
     paths:
       - "src/models/**"
       - "src/data/**"
-      - "data/processed/**"
-  workflow_dispatch:  # 수동 트리거도 가능
+  workflow_dispatch:
   schedule:
     - cron: "0 21 * * *"  # 매일 오전 6시 KST (= UTC 21:00)
 
@@ -29,23 +28,56 @@ jobs:
       - name: Run tests first
         run: pytest tests/ -v --tb=short
 
-      - name: Collect data
-        run: python -m src.data.collect
+      - name: Download previous MLflow artifacts (if exist)
+        uses: actions/download-artifact@v4
+        with:
+          name: mlruns
+          path: mlruns/
+        continue-on-error: true  # 첫 실행 시 artifacts 없어도 계속 진행
+
+      - name: Download previous data artifacts (if exist)
+        uses: actions/download-artifact@v4
+        with:
+          name: data
+          path: data/
+        continue-on-error: true
+
+      - name: Collect historical data (최초 1회 또는 data 없을 때)
+        run: |
+          if [ ! -f data/raw/schedules.parquet ]; then
+            echo "초기 데이터 수집 (2021 ~ 직전 시즌)"
+            python -m src.data.collect
+          else
+            echo "기존 데이터 존재 → 당해 시즌만 갱신"
+          fi
+
+      - name: Update current season data
+        run: python -c "from src.data.collect import update_current_season; update_current_season()"
 
       - name: Build features
         run: python -m src.data.features
 
-      - name: Train models (MLflow local)
+      - name: Train models
         env:
           MLFLOW_TRACKING_URI: sqlite:///mlflow.db
         run: python -m src.models.train --model all
+
+      - name: Upload MLflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlruns
+          path: mlruns/
+          retention-days: 30
+
+      - name: Upload data artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: data
+          path: data/
+          retention-days: 30
 
       - name: Build Docker image
         run: docker build -t mlb-predictor:${{ github.sha }} .
 
       - name: Tag as latest
         run: docker tag mlb-predictor:${{ github.sha }} mlb-predictor:latest
-
-      # 실제 배포 환경(EC2, Fly.io 등)이 있으면 아래에 push 단계 추가
-      # - name: Push to registry
-      #   run: docker push your-registry/mlb-predictor:latest

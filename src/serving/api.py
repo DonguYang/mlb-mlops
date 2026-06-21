@@ -1,13 +1,16 @@
 """FastAPI 예측 서버"""
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import os
+
 import mlflow.pyfunc
 import pandas as pd
-import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+from src.data.features import FEATURE_COLS
 
 app = FastAPI(title="MLB Win Predictor", version="1.0")
 
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MODEL_NAME = "mlb_win_predictor"
 MODEL_STAGE = "Production"
 
@@ -68,18 +71,9 @@ def predict(req: PredictRequest):
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"모델 로드 실패: {e}")
 
-    features = pd.DataFrame([{
-        "home_win_rate_l10": req.home_win_rate_l10,
-        "away_win_rate_l10": req.away_win_rate_l10,
-        "home_era": req.home_era,
-        "away_era": req.away_era,
-        "home_ops": req.home_ops,
-        "away_ops": req.away_ops,
-        "home_advantage": 1.0,
-    }])
+    features = pd.DataFrame([{col: getattr(req, col) for col in FEATURE_COLS}])
 
     proba = model.predict(features)
-    # pyfunc은 numpy array 반환, sklearn pipeline은 predict_proba 필요 시 unwrap
     if hasattr(model._model_impl, "predict_proba"):
         prob = model._model_impl.predict_proba(features)[0][1]
     else:

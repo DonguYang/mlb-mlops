@@ -1,7 +1,9 @@
 """MLB 경기 결과 및 팀 통계 수집 (공식 MLB Stats API)"""
+from datetime import date
+from pathlib import Path
+
 import pandas as pd
 import requests
-from pathlib import Path
 import statsapi
 
 RAW_DIR = Path(__file__).parents[2] / "data" / "raw"
@@ -74,7 +76,14 @@ def fetch_team_season_stats(season: int) -> pd.DataFrame:
     return df
 
 
-def collect_seasons(start: int = 2020, end: int = 2024) -> None:
+def collect_seasons(start: int = 2021, end: int = None) -> None:
+    """
+    start: 수집 시작 시즌 (2021년 이전은 COVID 단축시즌 등 품질 문제)
+    end: 수집 종료 시즌. None이면 직전 시즌(date.today().year - 1)
+    """
+    if end is None:
+        end = date.today().year - 1
+
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     all_games, all_stats = [], []
 
@@ -89,6 +98,36 @@ def collect_seasons(start: int = 2020, end: int = 2024) -> None:
     games_df.to_parquet(RAW_DIR / "schedules.parquet", index=False)
     stats_df.to_parquet(RAW_DIR / "team_stats.parquet", index=False)
     print(f"\n저장 완료: {len(games_df)}경기, {len(stats_df)}팀×시즌 → {RAW_DIR}")
+
+
+def update_current_season() -> None:
+    """당해 시즌 경기 결과 및 팀 통계를 갱신. 매일 배치에서 호출."""
+    current_year = date.today().year
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+    new_games = fetch_season_games(current_year)
+    new_stats = fetch_team_season_stats(current_year)
+
+    schedules_path = RAW_DIR / "schedules.parquet"
+    stats_path = RAW_DIR / "team_stats.parquet"
+
+    if schedules_path.exists():
+        existing_games = pd.read_parquet(schedules_path)
+        existing_games = existing_games[existing_games["season"] != current_year]
+        games_df = pd.concat([existing_games, new_games], ignore_index=True)
+    else:
+        games_df = new_games
+
+    if stats_path.exists():
+        existing_stats = pd.read_parquet(stats_path)
+        existing_stats = existing_stats[existing_stats["season"] != current_year]
+        stats_df = pd.concat([existing_stats, new_stats], ignore_index=True)
+    else:
+        stats_df = new_stats
+
+    games_df.to_parquet(schedules_path, index=False)
+    stats_df.to_parquet(stats_path, index=False)
+    print(f"\n{current_year}시즌 갱신 완료 → {RAW_DIR}")
 
 
 if __name__ == "__main__":

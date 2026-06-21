@@ -1,27 +1,26 @@
 """MLflow 연동 모델 학습 (Logistic Regression → XGBoost)"""
 import argparse
-import pandas as pd
-import numpy as np
+from datetime import date
 from pathlib import Path
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, roc_auc_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-import xgboost as xgb
+
 import mlflow
 import mlflow.sklearn
+import xgboost as xgb
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+from src.data.features import FEATURE_COLS
 
 PROCESSED_DIR = Path(__file__).parents[2] / "data" / "processed"
-FEATURE_COLS = [
-    "home_win_rate_l10", "away_win_rate_l10",
-    "home_era", "away_era",
-    "home_ops", "away_ops",
-    "home_advantage",
-]
 
 
-def load_data(holdout_season: int = 2024):
+def load_data(holdout_season: int = None):
+    if holdout_season is None:
+        holdout_season = date.today().year - 1
+
+    import pandas as pd
     df = pd.read_parquet(PROCESSED_DIR / "features.parquet")
     train = df[df["season"] < holdout_season]
     test = df[df["season"] == holdout_season]
@@ -96,7 +95,7 @@ def promote_best_model():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=["logistic", "xgboost", "all"], default="all")
-    parser.add_argument("--holdout-season", type=int, default=2024)
+    parser.add_argument("--holdout-season", type=int, default=None)
     args = parser.parse_args()
 
     mlflow.set_experiment("mlb_win_prediction")
