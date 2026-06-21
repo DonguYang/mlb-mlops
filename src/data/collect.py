@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-import statsapi
 
 RAW_DIR = Path(__file__).parents[2] / "data" / "raw"
 MLB_API = "https://statsapi.mlb.com/api/v1"
@@ -21,25 +20,36 @@ TEAM_IDS = {
 
 def fetch_season_games(season: int) -> pd.DataFrame:
     print(f"  {season}시즌 경기 수집 중...")
-    schedule = statsapi.schedule(
-        start_date=f"{season}-03-01",
-        end_date=f"{season}-10-31",
-        sportId=1,
-    )
+    url = f"{MLB_API}/schedule"
+    params = {
+        "startDate": f"{season}-03-01",
+        "endDate": f"{season}-10-31",
+        "sportId": 1,
+        "gameType": "R",        # 정규시즌만
+        "fields": "dates,date,games,gamePk,status,detailedState,teams,home,away,team,id,score",
+    }
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+
     rows = []
-    for g in schedule:
-        if g.get("status") != "Final":
-            continue
-        rows.append({
-            "game_id": g["game_id"],
-            "date": g["game_date"],
-            "season": season,
-            "home_team": TEAM_IDS.get(g["home_id"], str(g["home_id"])),
-            "away_team": TEAM_IDS.get(g["away_id"], str(g["away_id"])),
-            "home_score": g["home_score"],
-            "away_score": g["away_score"],
-            "home_win": int(g["home_score"] > g["away_score"]),
-        })
+    for date_entry in r.json().get("dates", []):
+        for g in date_entry.get("games", []):
+            if g.get("status", {}).get("detailedState") != "Final":
+                continue
+            home = g["teams"]["home"]
+            away = g["teams"]["away"]
+            home_score = home.get("score", 0) or 0
+            away_score = away.get("score", 0) or 0
+            rows.append({
+                "game_id": g["gamePk"],
+                "date": date_entry["date"],
+                "season": season,
+                "home_team": TEAM_IDS.get(home["team"]["id"], str(home["team"]["id"])),
+                "away_team": TEAM_IDS.get(away["team"]["id"], str(away["team"]["id"])),
+                "home_score": home_score,
+                "away_score": away_score,
+                "home_win": int(home_score > away_score),
+            })
     df = pd.DataFrame(rows)
     print(f"    → {len(df)}경기")
     return df
@@ -92,11 +102,29 @@ def collect_seasons(start: int = 2021, end: int = None) -> None:
         all_games.append(fetch_season_games(season))
         all_stats.append(fetch_team_season_stats(season))
 
-    games_df = pd.concat(all_games, ignore_index=True)
-    stats_df = pd.concat(all_stats, ignore_index=True)
+    new_games = pd.concat(all_games, ignore_index=True)
+    new_stats = pd.concat(all_stats, ignore_index=True)
 
-    games_df.to_parquet(RAW_DIR / "schedules.parquet", index=False)
-    stats_df.to_parquet(RAW_DIR / "team_stats.parquet", index=False)
+    schedules_path = RAW_DIR / "schedules.parquet"
+    stats_path = RAW_DIR / "team_stats.parquet"
+    seasons = list(range(start, end + 1))
+
+    if schedules_path.exists():
+        existing = pd.read_parquet(schedules_path)
+        existing = existing[~existing["season"].isin(seasons)]
+        games_df = pd.concat([existing, new_games], ignore_index=True)
+    else:
+        games_df = new_games
+
+    if stats_path.exists():
+        existing = pd.read_parquet(stats_path)
+        existing = existing[~existing["season"].isin(seasons)]
+        stats_df = pd.concat([existing, new_stats], ignore_index=True)
+    else:
+        stats_df = new_stats
+
+    games_df.to_parquet(schedules_path, index=False)
+    stats_df.to_parquet(stats_path, index=False)
     print(f"\n저장 완료: {len(games_df)}경기, {len(stats_df)}팀×시즌 → {RAW_DIR}")
 
 

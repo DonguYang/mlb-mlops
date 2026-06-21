@@ -169,6 +169,23 @@ Streamlit 대시보드에서 팀명을 선택하면 `collect.py`의 API 호출 �
 
 ---
 
+## 15. collect_seasons()이 기존 parquet을 덮어씀 (데이터 유실 위험)
+
+**문제**
+`collect_seasons()`은 항상 전체를 새로 수집해서 parquet을 덮어씀. 특정 시즌만 추가하려다 기존 전체 데이터가 유실될 수 있음. (실제로 2025만 수집했다가 2021~2024, 2026 데이터가 사라짐)
+
+**해결**
+`collect_seasons()`도 `update_current_season()`처럼 기존 parquet과 병합 후 저장하도록 수정.
+
+```python
+if schedules_path.exists():
+    existing = pd.read_parquet(schedules_path)
+    existing = existing[~existing["season"].isin(range(start, end+1))]
+    games_df = pd.concat([existing, games_df], ignore_index=True)
+```
+
+---
+
 ## 14. 테스트가 실질적인 로직을 검증하지 않음
 
 **문제**
