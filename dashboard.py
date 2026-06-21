@@ -110,7 +110,7 @@ def get_games(target_date: date) -> list:
 
 
 def predict_game(model, home_team: str, away_team: str,
-                 stats: pd.DataFrame, win_rates: dict) -> dict | None:
+                 stats: pd.DataFrame, win_rates: dict):
     """단일 경기 예측"""
     if home_team not in stats.index or away_team not in stats.index:
         return None
