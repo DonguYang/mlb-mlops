@@ -1,7 +1,8 @@
 """FastAPI 예측 서버"""
-import os
+import json
+import pickle
+from pathlib import Path
 
-import mlflow.pyfunc
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -10,9 +11,9 @@ from src.data.features import FEATURE_COLS
 
 app = FastAPI(title="MLB Win Predictor", version="1.0")
 
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
-MODEL_NAME = "mlb_win_predictor"
-MODEL_STAGE = "Production"
+MODELS_DIR = Path(__file__).parents[2] / "models"
+MODEL_PKL = MODELS_DIR / "production_model.pkl"
+MODEL_META = MODELS_DIR / "production_model_meta.json"
 
 _model = None
 
@@ -20,8 +21,10 @@ _model = None
 def get_model():
     global _model
     if _model is None:
-        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-        _model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}/{MODEL_STAGE}")
+        if not MODEL_PKL.exists():
+            raise FileNotFoundError(f"모델 파일 없음: {MODEL_PKL}")
+        with open(MODEL_PKL, "rb") as f:
+            _model = pickle.load(f)
     return _model
 
 
@@ -52,14 +55,10 @@ def health():
 @app.get("/model-info")
 def model_info():
     try:
-        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-        client = mlflow.tracking.MlflowClient()
-        versions = client.get_latest_versions(MODEL_NAME, stages=[MODEL_STAGE])
-        if not versions:
-            return {"model": MODEL_NAME, "stage": MODEL_STAGE, "version": "none"}
-        v = versions[0]
-        return {"model": MODEL_NAME, "stage": MODEL_STAGE,
-                "version": v.version, "run_id": v.run_id}
+        if not MODEL_META.exists():
+            return {"model": "mlb_win_predictor", "version": "none"}
+        with open(MODEL_META) as f:
+            return json.load(f)
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -79,10 +78,11 @@ def predict(req: PredictRequest):
     else:
         prob = float(proba[0])
 
+    meta = json.loads(MODEL_META.read_text()) if MODEL_META.exists() else {}
     return PredictResponse(
         home_win_prob=round(prob, 4),
         away_win_prob=round(1 - prob, 4),
         prediction=req.home_team if prob >= 0.5 else req.away_team,
-        model_name=MODEL_NAME,
-        model_stage=MODEL_STAGE,
+        model_name=meta.get("model_name", "mlb_win_predictor"),
+        model_stage=meta.get("version", "unknown"),
     )

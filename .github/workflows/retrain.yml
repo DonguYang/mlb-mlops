@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true  # git LFS 파일(모델) 포함 checkout
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -27,13 +30,6 @@ jobs:
 
       - name: Run tests first
         run: pytest tests/ -v --tb=short
-
-      - name: Download previous MLflow artifacts (if exist)
-        uses: actions/download-artifact@v4
-        with:
-          name: mlruns
-          path: mlruns/
-        continue-on-error: true  # 첫 실행 시 artifacts 없어도 계속 진행
 
       - name: Download previous data artifacts (if exist)
         uses: actions/download-artifact@v4
@@ -62,12 +58,10 @@ jobs:
           MLFLOW_TRACKING_URI: sqlite:///mlflow.db
         run: python -m src.models.train --model all
 
-      - name: Upload MLflow artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlruns
-          path: mlruns/
-          retention-days: 30
+      - name: Export production model to models/
+        env:
+          MLFLOW_TRACKING_URI: sqlite:///mlflow.db
+        run: python -m src.models.export
 
       - name: Upload data artifacts
         uses: actions/upload-artifact@v4
@@ -76,8 +70,11 @@ jobs:
           path: data/
           retention-days: 30
 
-      - name: Build Docker image
-        run: docker build -t mlb-predictor:${{ github.sha }} .
-
-      - name: Tag as latest
-        run: docker tag mlb-predictor:${{ github.sha }} mlb-predictor:latest
+      - name: Commit & push model to git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add models/production_model.pkl models/production_model_meta.json
+          git diff --cached --quiet && echo "모델 변경 없음 → 스킵" || \
+            git commit -m "chore: 모델 업데이트 $(date '+%Y-%m-%d') [skip ci]" && \
+            git push origin main
