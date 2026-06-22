@@ -13,6 +13,8 @@ on:
 jobs:
   retrain:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 모델 파일 git push 허용
     steps:
       - uses: actions/checkout@v4
         with:
